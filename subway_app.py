@@ -21,7 +21,7 @@ import json
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 
-# ---- PAGE CONFIGURATION --------------------------------------------------------
+# ── 페이지 기본 설정 (웹 브라우저 타이틀 및 레이아웃 제어) ─────────────────────────
 st.set_page_config(
     page_title="2호선 실시간 관제 및 승하차 예측",
     page_icon="🚇",
@@ -29,7 +29,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---- STYLING & CUSTOM CSS ------------------------------------------------------
+# ── 웹 대시보드 화면 스타일링 (커스텀 CSS 및 메트릭 카드 정의) ────────────────────────
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
@@ -60,7 +60,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---- LOAD ENVIRONMENT VARIABLES (.env) -----------------------------------------
+# ── 환경변수 설정 파일(.env)에서 API Key 로드 ───────────────────────────────────
 if os.path.exists(".env"):
     with open(".env", "r", encoding="utf-8") as f:
         for line in f:
@@ -69,10 +69,10 @@ if os.path.exists(".env"):
                 k, v = line.split("=", 1)
                 os.environ[k.strip()] = v.strip()
 
-# ---- DEFAULT KMA WEATHER API KEY ----------------------------------------------
+# ── 기상청 과거/실시간 날씨 데이터를 가져오기 위한 디폴트 서비스 인증키 ─────────────────
 DEFAULT_KMA_KEY = "c8a63dac44b7ee08af43d9426d891501328ed2e638e432fe873ff9bb28d11484"
 
-# ---- LOAD STATIC TRANSFER DATA (FROM JSON) ------------------------------------
+# ── 지하철 호선별 정적 환승역 정보 로딩 (노선도 맵핑 및 팝업용) ──────────────────────────
 TRANSFER_INFO = {}
 if os.path.exists("data/transfer_info.json"):
     try:
@@ -81,7 +81,7 @@ if os.path.exists("data/transfer_info.json"):
     except Exception as e:
         st.error(f"환승 정보 로드 오류: {e}")
 
-# ---- LINE 2 STATIONS LIST (MAPPED IN CIRCULAR ORDER) ---------------------------
+# ── 2호선 역 목록 상수 정의 (실제 순환선 정거장 순서대로 배열) ─────────────────────────
 MAIN_LINE = [
     "시청", "을지로입구", "을지로3가", "을지로4가", "동대문역사문화공원(DDP)",
     "신당", "상왕십리", "왕십리", "한양대", "뚝섬", "성수", "건대입구",
@@ -95,28 +95,30 @@ MAIN_LINE = [
 SUNGSU_BRANCH = ["용답", "신답", "용두(동대문구청)", "신설동"]
 SINDORIM_BRANCH = ["도림천", "양천구청", "신정네거리", "까치산"]
 
-# Integrated list of all Line 2 main and branch stations
+# 2호선 본선 순환선 및 성수/신도림 지선을 모두 하나로 합친 전체 2호선 역 리스트
 ALL_LINE2_STATIONS = MAIN_LINE + SUNGSU_BRANCH + SINDORIM_BRANCH
 
-# ---- LOAD HISTORICAL TIME-SERIES DATA FOR LSTM -------------------------------
+# ── LSTM 예측 모델 학습/추론용 과거 시계열 기준 데이터셋 로드 ──────────────────────────
 @st.cache_data
 def load_lstm_base_dataset():
     path = "final_dataset_230101-241231.csv"
+    if not os.path.exists(path):
+        path = "data/processed/final_dataset_230101-241231.csv"
     if not os.path.exists(path):
         path = "final_dataset.csv"
     if not os.path.exists(path):
         return None
     try:
         df = pd.read_csv(path)
-        # Keep only required columns to optimize performance and memory
+        # 메모리 낭비를 방지하고 연산 속도를 올리기 위해 필수 연산 컬럼만 정형 필터링
         df['날짜'] = pd.to_datetime(df['날짜'])
         df['요일'] = df['날짜'].dt.weekday
         df['요일_시간'] = df['요일'] * 24 + df['시간']
         
-        # Sort by Date and Hour to maintain chronological time-series structure
+        # LSTM 모델의 과거 시계열 기억 구조를 유지하기 위해 날짜와 시간의 연대기적 정렬 보장
         df = df.sort_values(by=['역명', '날짜', '시간']).reset_index(drop=True)
         
-        # Group by station to calculate average boarding and alighting numbers for backup
+        # 데이터 유실이나 결측치를 유연하게 덮어쓰기 위한 역별 기준 승하차 평균 인원 사전 계산
         if '역별_평균_승차' not in df.columns:
             stn_in = df.groupby('역명')['승차인원'].mean().to_dict()
             df['역별_평균_승차'] = df['역명'].map(stn_in)
@@ -124,7 +126,7 @@ def load_lstm_base_dataset():
             stn_out = df.groupby('역명')['하차인원'].mean().to_dict()
             df['역별_평균_하차'] = df['역명'].map(stn_out)
             
-        # Apply log transform (log1p)
+        # 데이터 분포의 왜곡을 방지하고 스케일링 성능을 끌어올리기 위한 자연로그 log(x + 1) 변환 적용
         for col in ['승차인원', '하차인원', '역별_평균_승차', '역별_평균_하차']:
             df[col] = np.log1p(df[col])
             
@@ -134,7 +136,7 @@ def load_lstm_base_dataset():
 
 LSTM_BASE_DF = load_lstm_base_dataset()
 
-# ---- MODEL LOADING SECTION -----------------------------------------------------
+# ── 예측 AI 모델 로딩 영역 (XGBoost, LightGBM, RandomForest, LSTM) ─────────────────────
 import keras
 
 @keras.saving.register_keras_serializable(package="Custom")
@@ -146,17 +148,17 @@ class PatchedEmbedding(keras.layers.Embedding):
 @st.cache_resource
 def load_all_models():
     """
-    Attempt to load all ML/DL models (XGBoost, LightGBM, RandomForest, LSTM).
-    If a model file is missing, it will fall back to a deterministic dummy simulator.
+    4대 예측 AI 모델(XGBoost, LightGBM, RandomForest, LSTM) 파일 및 전처리용 인코더/스케일러를 로드합니다.
+    로컬 가중치 파일이 누락되었을 경우 터미널에 에러 로그를 출력하고, 해당 모델은 사용 목록에서 자동 제외됩니다.
     """
     models = {}
     le_station = None
     
-    # 0. Load label encoder (for XGBoost and common UI categories)
+    # 0. 공통 역명 카테고리 라벨 인코더 로드 (XGBoost, LightGBM 등에서 역명을 숫자로 매핑하는 용도)
     try:
         le_station = joblib.load("models/xgboost/label_encoder_station.pkl")
     except Exception as e:
-        print(f"[WARN] Failed to load common label_encoder_station.pkl (XGBoost/LightGBM disabled): {e}")
+        print(f"[경고] 공통 label_encoder_station.pkl 로드 실패 (XGBoost/LightGBM 사용 불가): {e}")
 
     # 1. XGBoost
     try:
@@ -166,7 +168,7 @@ def load_all_models():
             "loaded": True
         }
     except Exception as e:
-        print(f"[WARN] Failed to load XGBoost model files: {e}")
+        print(f"[경고] XGBoost 모델 가중치 파일 로드 실패: {e}")
         models["XGBoost"] = {"loaded": False}
 
     # 2. LightGBM
@@ -177,7 +179,7 @@ def load_all_models():
             "loaded": True
         }
     except Exception as e:
-        print(f"[WARN] Failed to load LightGBM model files: {e}")
+        print(f"[경고] LightGBM 모델 가중치 파일 로드 실패: {e}")
         models["LightGBM"] = {"loaded": False}
 
     # 3. RandomForest
@@ -189,7 +191,7 @@ def load_all_models():
             "loaded": True
         }
     except Exception as e:
-        print(f"[WARN] Failed to load RandomForest model files: {e}")
+        print(f"[경고] RandomForest 모델 가중치 파일 로드 실패: {e}")
         models["RandomForest"] = {"loaded": False}
 
     # 4. LSTM
@@ -206,7 +208,7 @@ def load_all_models():
             compile=False
         )
         
-        # Try loading custom LSTM models for Jamsil station (fallback to general if failed)
+        # 유동인구가 극단적으로 집중되는 '잠실역' 전용 특화 LSTM 모델 추가 로딩 (실패 시 일반 2호선 LSTM으로 자동 대체)
         try:
             m_board_jamsil = keras.models.load_model(
                 "models/lstm/lstm_boarding_잠실.keras", 
@@ -227,7 +229,7 @@ def load_all_models():
             scaler_path = "models/lstm/scaler_x.pkl"
             
         scaler = joblib.load(scaler_path)
-        le_lstm = joblib.load("models/lstm/label_encoder.pkl") # Load LSTM specific label encoder
+        le_lstm = joblib.load("models/lstm/label_encoder.pkl") # LSTM 모델 고유의 카테고리 매핑용 라벨 인코더 로드
 
         models["LSTM"] = {
             "board": m_board,
@@ -246,13 +248,13 @@ def load_all_models():
 ALL_MODELS, le_station, model_loaded = load_all_models()
 model_loaded_state = any(m.get("loaded", False) for m in ALL_MODELS.values())
 
-# Load all station names supported by the model (including branch line stations like Sindap, Yongdap)
+# 모델 학습 결과물에서 지원 가능한 전체 지하철역 리스트 로드 (지선 역 목록 포함)
 if model_loaded:
     STATIONS = sorted(list(le_station.classes_))
 else:
     STATIONS = sorted(ALL_LINE2_STATIONS)
 
-# Set average boarding passengers per station (for congestion baseline calculation)
+# 각 역별 하루 평균 혼잡 기준 인원 설정 (실시간 예측값 대비 혼잡도 퍼센트를 산출하기 위한 기준 분모값)
 STATION_AVG = {stn: 1500 for stn in STATIONS}
 STATION_AVG.update({
     "강남": 3200, "홍대입구": 2800, "잠실": 2600, "신림": 2200,
@@ -263,7 +265,7 @@ STATION_AVG.update({
     "양천구청": 900, "도림천": 300
 })
 
-# ---- FEATURE COLUMNS DEFINITION ------------------------------------------------
+# ── 모델 학습 시 사용한 피처 컬럼 정의 (이 순서와 명칭이 모델 입력 차원과 완벽히 일치해야 합니다) ──
 FEATURE_COLS = [
     "역명_enc",
     "시간", "시간_sin", "시간_cos",
@@ -276,26 +278,26 @@ FEATURE_COLS = [
     "공휴일_유형", "연휴_여부", "공휴일_전날", "공휴일_다음날",
 ]
 
-# ---- MODEL PREDICTION FUNCTIONS ------------------------------------------------
+# ── 실시간 지하철 혼잡도 예측 엔진 (핵심 연산 함수군) ───────────────────────────────────
 def get_holiday_type(d, kr_hols):
     if d not in kr_hols:
         return 0
     name = kr_hols.get(d, "")
-    # Lunar New Year / Chuseok holidays (preceding/following days included)
+    # 설날 및 추석 명절 연휴(연휴 전날 및 다음날 등 귀성/귀경 인파 포함)는 가중치 3번으로 지정
     if any(k in name for k in ["Korean New Year", "Chuseok", "설날", "추석", "preceding", "second day"]):
         return 3
-    # Family and outdoor activity holidays
+    # 어린이날, 크리스마스, 석가탄신일 등 가족 단위 야외 활동이 급증하는 휴일은 가중치 2번으로 지정
     elif any(k in name for k in ["Children", "Christmas", "Buddha", "어린이날", "성탄절", "기독탄신일", "부처님오신날", "석가탄신일"]):
         return 2
     return 1
 
 def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
-    # Check if the selected model's data is successfully loaded
+    # 선택한 모델이 정상적으로 메모리에 로딩되어 구동 가능한 상태인지 확인
     m_info = ALL_MODELS.get(model_name, {})
     if not m_info.get("loaded", False):
         raise ValueError(f"Model '{model_name}' is not loaded. Please verify model files in models/ directory.")
 
-    # Real model prediction logic if files exist
+    # 가중치 파일들이 안전하게 로드된 것을 바탕으로 정식 예측 연산 로직 시작
     kr_hols  = hd.KR(years=dt.year)
     is_hol   = int(dt.date() in kr_hols)
     stn_enc  = le_station.transform([station])[0]
@@ -334,12 +336,12 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
 
     X = pd.DataFrame([row])[FEATURE_COLS]
     
-    # LSTM Model specific inference execution branch (requires Keras sequence input)
+    # ── [딥러닝 LSTM 전용 연산 분기] 시계열 시퀀스(과거 12시간)와 임베딩 인풋의 다중 입력 추론 수행 ──
     if model_name == "LSTM" and m_info.get("loaded", False):
         try:
             scaler = m_info["scaler"]
             
-            # Switch models for Jamsil station (special customized version)
+            # 특정 대용량 혼잡역인 '잠실역'일 경우 전용 가중치 모델로 자동 분기 스위칭
             is_jamsil = "잠실" in station
             if is_jamsil and "board_jamsil" in m_info and "alight_jamsil" in m_info:
                 m_board = m_info["board_jamsil"]
@@ -348,7 +350,7 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
                 m_board = m_info["board"]
                 m_alight = m_info["alight"]
 
-            # Extract station label encoding using LSTM specific label encoder (fuzzy matching)
+            # 역명을 고유 정수 번호로 바꾸기 위해 LSTM 전용 인코더를 매핑하여 색인 추출
             station_idx = 0
             le_lstm = m_info.get("le")
             if le_lstm is not None:
@@ -357,7 +359,7 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
                         station_idx = idx
                         break
 
-            # Feature schema for MinMaxScaler: ['승차인원', '하차인원', '시간', '요일', '월', '공휴일여부', '기온', '강수량', '적설', '요일_시간', '역별_평균_승차', '역별_평균_하차']
+            # MinMaxScaler 변환을 거칠 12개 피처의 스펙 구조 정의
             avg_val = 1500
             if le_lstm is not None:
                 matched_cls = le_lstm.classes_[station_idx]
@@ -366,10 +368,10 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
                         avg_val = v
                         break
                 
-            # The new scaler expects log1p transformed values for passengers and averages.
+            # 학습 시점과 일관성을 유지하도록 기준이 되는 역별 평균인원 값에 자연로그 log(x + 1) 선적용
             log_avg_val = np.log1p(avg_val)
 
-            # Construct temporary DataFrame for scaling (using log-transformed passenger baseline)
+            # 스케일러(MinMaxScaler) 변환 연산을 거치기 위한 1행의 임시 Pandas 데이터프레임 빌드
             row_scaler = {
                 "승차인원": 0.0,
                 "하차인원": 0.0,
@@ -385,15 +387,15 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
                 "역별_평균_하차": float(log_avg_val)
             }
             
-            # Align column order before applying transform
+            # 스케일러가 기억하는 컬럼 정렬 기준에 맞춰 컬럼 순서 완벽 정렬
             scaler_cols = ['승차인원', '하차인원', '시간', '요일', '월', '공휴일여부', '기온', '강수량', '적설', '요일_시간', '역별_평균_승차', '역별_평균_하차']
             df_scale_in = pd.DataFrame([row_scaler])[scaler_cols]
             df_scaled = pd.DataFrame(scaler.transform(df_scale_in), columns=scaler_cols)
             
-            # Build 12 feature list complying with feature_info.json specification
+            # MinMaxScaler 변환 처리를 최종 실행하여 12차원 정규화 피처 리스트 확보
             feat_12 = list(df_scaled.values[0])
             
-            # Construct time-series sequence data from historical dataset
+            # LSTM의 타임스텝 연산을 위한 12시간 분량의 시계열 시퀀스(Sequence) 윈도우 데이터 구축
             if LSTM_BASE_DF is not None:
                 matched_stn = station
                 le_lstm = m_info.get("le")
@@ -424,25 +426,25 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
                 
             X_in = np.expand_dims(seq, axis=0)
             
-            # Construct station ID input array -> shape: (1, 1)
+            # LSTM의 다중 입력을 이루는 단일 역 고유 ID 입력 행렬 구축 -> shape: (1, 1)
             stn_in = np.array([[float(station_idx)]])
             
-            # Run model inference with multi-inputs [sequence_input, station_input]
+            # 다중 입력 리스트 [시퀀스_데이터, 역_ID_데이터]를 LSTM 모델에 전달하여 병렬 예측 실행
             pred_b = np.array(m_board([X_in, stn_in], training=False))
             pred_a = np.array(m_alight([X_in, stn_in], training=False))
             
-            # Inverse scale the predicted outputs (reshape to 12D array)
-            # Inverse scaling for boarding passengers
+            # 정규화 스케일링된 출력값(12차원)을 원래 크기로 되돌리기 위한 스케일러 역변환(inverse_transform) 적용
+            # 승차 인원 스케일링 역변환 수행
             dummy_row_b = np.zeros((1, 12))
             dummy_row_b[0, 0] = pred_b.flatten()[0] # 승차인원 위치
             log_val_b = scaler.inverse_transform(dummy_row_b)[0, 0]
             
-            # Inverse scaling for alighting passengers
+            # 하차 인원 스케일링 역변환 수행
             dummy_row_a = np.zeros((1, 12))
             dummy_row_a[0, 1] = pred_a.flatten()[0] # 하차인원 위치
             log_val_a = scaler.inverse_transform(dummy_row_a)[0, 1]
             
-            # Apply exponential inverse (expm1) to restore to original passenger count
+            # 로그 형태의 예측값 log(x + 1)을 실제 승객 수(명)로 바꾸기 위한 지수 역변환 e^x - 1 (expm1) 적용
             b_val = np.expm1(log_val_b)
             a_val = np.expm1(log_val_a)
             
@@ -450,7 +452,7 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
             a = int(np.clip(a_val, 0, None))
             
         except Exception as e:
-            # Fall back to XGBoost model predictions in case of LSTM runtime errors
+            # LSTM 연산 중 장애 발생 시, 시스템 무중단을 위해 1차적으로 강건한 XGBoost 모델 예측값으로 안전하게 대체 구동
             xgb_info = ALL_MODELS.get("XGBoost", {})
             if xgb_info.get("loaded", False):
                 b = int(np.clip(xgb_info["board"].predict(X), 0, None)[0])
@@ -459,7 +461,7 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
                 raise RuntimeError(f"LSTM prediction failed: {e}, and XGBoost fallback is unavailable.")
     else:
         if model_name == "RandomForest":
-            # Build 57-dimensional one-hot encoded feature DataFrame for RandomForest
+            # ── [머신러닝 RandomForest 전용 연산] 원-핫 인코딩(57차원) 변환 및 예측 실행 ──
             rf_cols = m_info["cols"]
             row_rf = {
                 "시간": float(hour),
@@ -470,7 +472,7 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
                 "강수량": float(rain),
                 "적설": float(snow)
             }
-            # Set values for the station name one-hot columns
+            # RandomForest가 학습한 컬럼 명칭(역명_강남 등) 중 매칭되는 컬럼에 1.0 대입, 나머지는 0.0 대입
             for col in rf_cols:
                 if col.startswith("역명_"):
                     stn_part = col.replace("역명_", "")
@@ -480,7 +482,7 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
             b = int(np.clip(m_info["board"].predict(X_rf),  0, None)[0])
             a = int(np.clip(m_info["alight"].predict(X_rf), 0, None)[0])
         elif model_name == "LightGBM":
-            # Build 12-dimensional feature DataFrame for LightGBM with categorical mappings
+            # ── [머신러닝 LightGBM 전용 연산] 범주형(Categorical) 변수 매핑 및 예측 실행 ──
             row_lgb = {
                 "역명": station,
                 "호선": "2호선",
@@ -497,7 +499,7 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
             }
             df_lgb = pd.DataFrame([row_lgb])
             
-            # Align category mapping order for categorical variables
+            # LightGBM 패키지가 정상 동작하도록 역명과 호선 변수를 범주형 타입(Categorical)으로 정렬 보정
             stn_categories = sorted(list(le_station.classes_))
             line_categories = ['2호선']
             df_lgb["역명"] = pd.Categorical(df_lgb["역명"], categories=stn_categories)
@@ -509,7 +511,7 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="XGBoost"):
             b = int(np.clip(m_info["board"].predict(X_lgb),  0, None)[0])
             a = int(np.clip(m_info["alight"].predict(X_lgb), 0, None)[0])
         else:
-            # Standard XGBoost inference path
+            # ── [머신러닝 XGBoost 공용 연산] 데이터프레임 입력 기반의 표준 예측 실행 ──
             b = int(np.clip(m_info["board"].predict(X),  0, None)[0])
             a = int(np.clip(m_info["alight"].predict(X), 0, None)[0])
         
@@ -532,11 +534,11 @@ def get_congestion(board, station):
     if ratio < 1.5:   return "혼잡",   "#92400e", "#fef3c7"
     return              "매우혼잡", "#991b1b", "#fee2e2"
 
-# ---- WEATHER API CLIENTS -------------------------------------------------------
+# ── 기상청 날씨 조회 API 클라이언트 모듈 ──────────────────────────────────────────
 def get_kma_weather(api_key, dt, hour):
     """
-    KMA short-term forecast API (Seoul base nx=60, ny=127).
-    Used for retrieving weather forecast within 3 days.
+    기상청 공공데이터 포털 단기예보 API (서울 기준 nx=60, ny=127).
+    오늘부터 3일 이내 범위의 날씨 예보 수집용.
     """
     try:
         base_times = [2, 5, 8, 11, 14, 17, 20, 23]
@@ -578,7 +580,7 @@ def get_kma_weather(api_key, dt, hour):
         for item in filtered:
             result[item["category"]] = item["fcstValue"]
 
-        # Helper function to parse KMA forecast string values
+        # 기상청 날씨 API 원본 문자열("강수없음", "1mm 미만" 등)을 분석해 파이썬 실수형(float)으로 변환해주는 헬퍼 함수
         def parse_kma_value(val_str, default=0.0):
             if not val_str:
                 return default
@@ -591,7 +593,7 @@ def get_kma_weather(api_key, dt, hour):
             except ValueError:
                 return default
 
-        # Parse temperature, precipitation, and snowfall values
+        # 기온(TMP), 3시간 기준 강수량(PCP), 적설량(SNO) 값을 정밀 파싱
         temp = float(result.get("TMP", 15.0))
         rain = parse_kma_value(result.get("PCP", "0"))
         snow = parse_kma_value(result.get("SNO", "0"))
@@ -599,11 +601,11 @@ def get_kma_weather(api_key, dt, hour):
         return round(temp, 1), round(rain, 1), round(snow, 1), "단기예보"
 
     except Exception as e:
-        print(f"[WARN] Exception in get_kma_weather: {e}")
+        print(f"[경고] 기상청 단기 예보 호출 실패: {e}")
         return None
 
 def get_mid_forecast_time():
-    """Get release time of KMA mid-term forecast (06:00, 18:00)"""
+    """기상청 중기예보의 발표 시간(매일 06:00, 18:00 정각)을 역산하여 발표 시각 규격 구하기"""
     now = datetime.now()
     if now.hour < 6:
         base_date = (now - timedelta(days=1)).strftime("%Y%m%d")
@@ -618,11 +620,11 @@ def get_mid_forecast_time():
 
 def get_kma_mid_weather(api_key, dt):
     """
-    KMA mid-term forecast API (Seoul land-code 11B00000, temperature-point 11B10101).
-    Used for retrieving weather forecast between 3 to 10 days.
+    기상청 공공데이터 포털 중기예보 API (서울 육상코드 11B00000, 기온코드 11B10101).
+    오늘 기준 3일 후부터 10일 후까지의 예보 수집용.
     """
     try:
-        # Secure target date as date object for calculation
+        # 안정적인 날짜 간격 계산을 위해 입력된 date 값을 datetime 객체로 통일화
         target_date = dt if isinstance(dt, date) else dt.date()
         days_diff = (target_date - date.today()).days
         if days_diff < 3 or days_diff > 10:
@@ -630,7 +632,7 @@ def get_kma_mid_weather(api_key, dt):
 
         tm_fc = get_mid_forecast_time()
 
-        # 1. Mid-term temperature forecast lookup (Seoul code 11B10101)
+        # 1. 중기 기온 조회 실행 (서울 전용 관측 ID 11B10101)
         url_ta = (
             "http://apis.data.go.kr/1360000/MidFcstInfoService/getMidTa"
             f"?serviceKey={api_key}"
@@ -639,7 +641,7 @@ def get_kma_mid_weather(api_key, dt):
             f"&tmFc={tm_fc}"
         )
 
-        # 2. Mid-term land weather forecast lookup (Seoul/Gyeonggi code 11B00000)
+        # 2. 중기 육상 상태(강수확률 및 기상 멘트) 조회 실행 (서울/경기 관측 ID 11B00000)
         url_land = (
             "http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
             f"?serviceKey={api_key}"
@@ -665,12 +667,12 @@ def get_kma_mid_weather(api_key, dt):
         item_ta = data_ta["response"]["body"]["items"]["item"][0]
         item_land = data_land["response"]["body"]["items"]["item"][0]
 
-        # Temperature
+        # 기온 최저/최고값의 평균값 산출
         ta_min = float(item_ta.get(f"taMin{days_diff}", 10.0))
         ta_max = float(item_ta.get(f"taMax{days_diff}", 20.0))
         avg_temp = (ta_min + ta_max) / 2.0
 
-        # Weather conditions and precipitation probability
+        # 날씨 문자열 및 오전/오후 강수 확률 평균치 계산 파싱
         if days_diff in [8, 9, 10]:
             wf = item_land.get(f"wf{days_diff}", "맑음")
             rn_st = float(item_land.get(f"rnSt{days_diff}", 0))
@@ -696,27 +698,26 @@ def get_kma_mid_weather(api_key, dt):
 
 def get_weather_with_fallback(api_key, dt, hour):
     """
-    Chained query for short-term and mid-term KMA weather forecast.
-    Falls back to monthly local average temperature if API fails.
-    Returns: (temp, rain, snow, source_name)
+    기상청 단기 및 중기 예보 API를 순차 조회하고, 에러나 한도 초과 시 서울의 평년 월별 평균 기온 대체 메커니즘을 적용합니다.
+    반환값: (기온, 강수량, 적설량, 정보제공 출처명)
     """
-    # 0. Calculate difference in days to determine forecast range
+    # 0. 조회하고자 하는 표적 날짜의 오늘 대비 일수 격차 계산
     target_date = dt if isinstance(dt, date) else dt.date()
     days_diff = (target_date - date.today()).days
     
-    # 1. Short-term forecast (within 3 days)
+    # 1. 오늘부터 2일 뒤까지의 범위는 초정밀 단기 예보 호출
     if 0 <= days_diff <= 2:
         res = get_kma_weather(api_key, dt, hour)
         if res is not None:
             return res
             
-    # 2. Mid-term forecast (from 3 to 10 days)
+    # 2. 3일 뒤부터 10일 뒤까지의 범위는 중기 주간 예보 호출
     if 3 <= days_diff <= 10:
         res_mid = get_kma_mid_weather(api_key, dt)
         if res_mid is not None:
             return res_mid
             
-    # 3. Fall back to historical monthly average temperatures if out of range or API fails
+    # 3. 모든 API 호출이 실패했거나, 조회 범위(10일 초과 과거/미래)를 벗어날 경우 월별 평년 평균 기온을 Fallback 대입
     month = dt.month
     monthly_temps = {
         1: -2.5, 2: 0.0, 3: 5.5, 4: 12.0, 5: 18.0, 6: 22.5,
@@ -730,9 +731,9 @@ def get_weather_with_fallback(api_key, dt, hour):
     return temp, 0.0, 0.0, source_name
 
 
-# ---- SEOUL METRO REAL-TIME TRAIN POSITION API ----------------------------------────────────────
+# ── 서울시 실시간 지하철 열차 정보 API 클라이언트 모듈 ─────────────────────────────────
 def get_realtime_train_positions(api_key="sample"):
-    """Seoul Open Data Plaza Line 2 real-time train positions API"""
+    """서울 열린데이터광장 OpenAPI 연동 2호선 실시간 열차 위치 목록 조회"""
     try:
         url = f"http://swopenAPI.seoul.go.kr/api/subway/{api_key}/json/realtimePosition/0/50/2호선"
         res = requests.get(url, timeout=5)
@@ -745,22 +746,22 @@ def get_realtime_train_positions(api_key="sample"):
     return []
 
 def get_realtime_station_arrival(station_name, api_key="sample"):
-    """Seoul Open Data Plaza real-time arrival info API for a specific station"""
+    """서울 열린데이터광장 OpenAPI 연동 특정 역의 도착 예정 정보 목록 조회"""
     try:
-        # Strip brackets from station name to query raw arrival info
+        # 지선 표기용 괄호(예: 용두(동대문구청) -> 용두)를 파싱해 순수 역명만으로 API 호출 파라미터 구성
         pure_name = station_name.split("(")[0]
         url = f"http://swopenAPI.seoul.go.kr/api/subway/{api_key}/json/realtimeStationArrival/0/20/{pure_name}"
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
             data = res.json()
             if "realtimeArrivalList" in data:
-                # Filter for Line 2 arrivals (subwayId: 1002)
+                # 2호선 고유 노선 코드(subwayId: 1002) 데이터만 필터링하여 노선 혼선 방지
                 return [arr for arr in data["realtimeArrivalList"] if arr.get("subwayId") == "1002"]
     except Exception as e:
         pass
     return []
 
-# ---- HOLIDAY DETECTION ---------------------------------------------------------
+# ── 공휴일 및 연휴 감지 로직 ───────────────────────────────────────────────────────
 def check_holiday(dt):
     kr_hols = hd.KR(years=dt.year)
     if dt.date() in kr_hols:
@@ -786,11 +787,11 @@ if not model_loaded_state:
     st.error("❌ 필수 AI 모델 파일을 전혀 찾을 수 없습니다. `models/` 디렉토리에 학습 완료된 모델 파일을 안전하게 배치해 주세요.")
     st.stop()
 
-# ---- SIDEBAR SETTINGS ----------------------------------------------------------
+# ── 사이드바 예측 옵션 설정 영역 ─────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ 예측 설정")
 
-    # Filter and display only successfully loaded models in sidebar
+    # 실제 로컬 파일 로드에 성공하여 가동 가능한 모델만 사이드바 옵션으로 추출
     loaded_models = [m_name for m_name, info in ALL_MODELS.items() if info.get("loaded", False)]
     if not loaded_models:
         loaded_models = ["XGBoost"]
@@ -830,7 +831,7 @@ with st.sidebar:
     st.subheader("🌤 날씨 설정")
     weather_mode = st.radio("날씨 입력 방식", ["기상청 API (실시간 자동)", "수동 입력"], index=0)
 
-# 기상청 날씨 로드
+# ── 기상청 실시간 예보 동기화 처리 ──
 if weather_mode == "기상청 API (실시간 자동)":
     api_key = os.environ.get("KMA_API_KEY", DEFAULT_KMA_KEY)
     
@@ -861,14 +862,14 @@ else:
     rain = st.slider("강수량 (mm)", min_value=0.0, max_value=100.0, value=0.0, step=0.5)
     snow = st.slider("적설 (mm)",  min_value=0.0, max_value=50.0,  value=0.0, step=0.5)
 
-# ---- HOLIDAY BANNER ------------------------------------------------------------
+# ── 공휴일 안내 배너 출력 (주말 및 특이 휴일 감지) ───────────────────────────────────
 dt = datetime.combine(selected_date, datetime.min.time())
 hol_name, hol_msg = check_holiday(dt)
 if hol_msg:
     icon = "🎉" if hol_name else "ℹ️"
     st.markdown(f'<div class="holiday-banner">{icon} {hol_msg}</div>', unsafe_allow_html=True)
 
-# ---- TAB NAVIGATION CONFIGURATION ----------------------------------------------
+# ── 메인 대시보드 6대 탭 레이아웃 설정 ─────────────────────────────────────────────
 tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🚇 실시간 관제 맵", 
     "📊 시간대별 예측", 
@@ -879,7 +880,7 @@ tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 # ================================================================================
-# TAB 0: Real-time Control Map (Circular metro line visualizer)
+# 탭 0: 실시간 지하철 열차 위치 관제 모니터 맵
 # ================================================================================
 with tab0:
     st.subheader("🚇 2호선 실시간 열차 위치 관제 모니터")
@@ -891,36 +892,36 @@ with tab0:
         if st.button("실시간 위치 새로고침 🔄"):
             st.rerun()
 
-    # Build coordinate mapping dictionary for 51 circular line stations
+    # 2호선 51개 역에 대해 2차원 원형 좌표계(x, y)를 구축하기 위한 수학적 사전 맵 구성
     N_main = len(MAIN_LINE)
     R_main = 18.0
     station_coords = {}
 
     for i, name in enumerate(MAIN_LINE):
-        # 12시 방향부터 시계방향 회전
+        # 본선 43개 역을 12시 방향(시청)부터 시계방향으로 원을 그리며 라디안 삼각함수 매핑
         theta = np.pi / 2 - (2 * np.pi * i / N_main)
         x = R_main * np.cos(theta)
         y = R_main * np.sin(theta)
         station_coords[name] = (x, y, "main")
 
-    # Sungsu branch coordinates (stretching vertically north from Sungsu)
+    # 성수지선 분기 노선 좌표 계산 (성수역 기준 북쪽으로 뻗어나가는 점선 브랜치 처리)
     x_sungsu, y_sungsu = station_coords["성수"][0], station_coords["성수"][1]
     for i, name in enumerate(SUNGSU_BRANCH):
         station_coords[name] = (x_sungsu, y_sungsu + (i + 1) * 2.5, "sungsu")
 
-    # Sindorim branch coordinates (stretching southwest from Sindorim)
+    # 신도림지선 분기 노선 좌표 계산 (신도림역 기준 남서쪽으로 뻗어나가는 점선 브랜치 처리)
     x_sindorim, y_sindorim = station_coords["신도림"][0], station_coords["신도림"][1]
     for i, name in enumerate(SINDORIM_BRANCH):
         station_coords[name] = (x_sindorim - (i + 1) * 2.0, y_sindorim - (i + 1) * 2.0, "sindorim")
 
-    # Collect real-time train location data
+    # 서울시 지하철 열차 정보 오픈 API 실시간 수집 호출
     seoul_key = os.environ.get("SEOUL_SUBWAY_API_KEY", "sample")
     trains = get_realtime_train_positions(seoul_key)
 
-    # Initialize Plotly figure
+    # 시각화 그래픽을 렌더링할 Plotly 피겨 객체 준비
     fig_map = go.Figure()
 
-    # 1. Draw main Loop Line 2 circular track with outer glow
+    # 1. 2호선 순환 궤도(본선) 그리기 (초록색 노선 글로우 필터 레이어 조합)
     main_x = [station_coords[name][0] for name in MAIN_LINE] + [station_coords[MAIN_LINE[0]][0]]
     main_y = [station_coords[name][1] for name in MAIN_LINE] + [station_coords[MAIN_LINE[0]][1]]
     
@@ -941,10 +942,11 @@ with tab0:
         showlegend=False
     ))
 
-    # 2. Draw Sungsu branch track
+    # 2. 성수지선 궤도 그리기 (성수역 기준 북쪽으로 뻗어나가는 점선 브랜치 처리)
     branch1_x = [station_coords["성수"][0]] + [station_coords[name][0] for name in SUNGSU_BRANCH]
     branch1_y = [station_coords["성수"][1]] + [station_coords[name][1] for name in SUNGSU_BRANCH]
     
+    # 성수지선 아우터 글로우 (연한 녹색 번짐 효과)
     fig_map.add_trace(go.Scatter(
         x=branch1_x, y=branch1_y,
         mode="lines",
@@ -952,6 +954,7 @@ with tab0:
         hoverinfo="skip",
         showlegend=False
     ))
+    # 성수지선 이너 메인선 (녹색 점선 스타일)
     fig_map.add_trace(go.Scatter(
         x=branch1_x, y=branch1_y,
         mode="lines",
@@ -960,10 +963,11 @@ with tab0:
         showlegend=False
     ))
 
-    # 3. Draw Sindorim branch track
+    # 3. 신도림지선 궤도 그리기 (신도림역 기준 남서쪽으로 뻗어나가는 점선 브랜치 처리)
     branch2_x = [station_coords["신도림"][0]] + [station_coords[name][0] for name in SINDORIM_BRANCH]
     branch2_y = [station_coords["신도림"][1]] + [station_coords[name][1] for name in SINDORIM_BRANCH]
     
+    # 신도림지선 아우터 글로우 (연한 녹색 번짐 효과)
     fig_map.add_trace(go.Scatter(
         x=branch2_x, y=branch2_y,
         mode="lines",
@@ -971,6 +975,7 @@ with tab0:
         hoverinfo="skip",
         showlegend=False
     ))
+    # 신도림지선 이너 메인선 (녹색 점선 스타일)
     fig_map.add_trace(go.Scatter(
         x=branch2_x, y=branch2_y,
         mode="lines",
@@ -979,7 +984,7 @@ with tab0:
         showlegend=False
     ))
 
-    # 4. Add station nodes and typographic text layout (expanded font sizes for readability)
+    # 4. 역 노드 마커 및 타이포그래피 레이아웃 배치 (가독성 향상을 위해 폰트 크기 확대 조정)
     node_x = [coord[0] for coord in station_coords.values()]
     node_y = [coord[1] for coord in station_coords.values()]
     node_names = list(station_coords.keys())
@@ -993,30 +998,31 @@ with tab0:
     node_text = []
     node_font_sizes = []
     
-    # Define major hub stations for typographic hierarchy
+    # 텍스트 계층 구조를 적용할 주요 환승 허브역 및 혼잡역 정의
     hubs = ["강남", "잠실", "홍대입구", "신도림", "사당", "신림", "시청", "건대입구", "성수", "왕십리", "선릉", "역삼", "교대"]
     
     for name in node_names:
+        # 현재 선택된 역인지 여부 확인 (괄호 안의 부가정보 제외 매칭 포함)
         is_selected = (name == selected_station) or (selected_station.split("(")[0] in name and name.split("(")[0] in selected_station)
         is_hub = any(h in name for h in hubs)
         transfers = TRANSFER_INFO.get(name, [])
         
         clean_name = name.split("(")[0]
         
-        # 1) Apply node styling
+        # 1) 노드 스타일 및 크기 설정
         if is_selected:
             node_symbols.append("circle")
-            node_colors.append("#0ea5e9") # 스카이 블루 (선택역)
+            node_colors.append("#0ea5e9") # 스카이 블루 (현재 사용자가 선택한 역 강조)
             node_sizes.append(15)
             node_border_colors.append("#ffffff")
             node_border_widths.append(2.5)
             
-            # 선택역은 진하게 파란색 강조 텍스트 (글자 크기 14.0)
+            # 선택된 역은 굵은 하늘색 강조 텍스트 (글자 크기 14.0)
             node_text.append(f"<b><span style='color:#0ea5e9;'>{clean_name}</span></b>")
             node_font_sizes.append(14.0)
         elif transfers and any(transfers):
             node_symbols.append("square")
-            node_colors.append("#ffffff") # 환승 허브역
+            node_colors.append("#ffffff") # 환승 허브역은 하얀색 사각형으로 구분
             node_sizes.append(10)
             node_border_colors.append("#22c55e")
             node_border_widths.append(1.5)
@@ -1029,7 +1035,7 @@ with tab0:
                 node_font_sizes.append(10.5)
         else:
             node_symbols.append("circle")
-            node_colors.append("#22c55e") # 일반역
+            node_colors.append("#22c55e") # 일반 정차역은 녹색 원형
             node_sizes.append(7.0)
             node_border_colors.append("#ffffff")
             node_border_widths.append(1.0)
@@ -1041,7 +1047,7 @@ with tab0:
                 node_text.append(clean_name)
                 node_font_sizes.append(10.5)
 
-    # 노드 플롯 추가 (텍스트 색상은 정의하지 않고 테마 자동 상속, customdata 주입으로 클릭 이벤트 바인딩)
+    # 노드 플롯 레이어 추가 (마우스 호버 시 역명 및 환승 노선 툴팁 제공, customdata 주입으로 클릭 연동 바인딩)
     fig_map.add_trace(go.Scatter(
         x=node_x, y=node_y,
         mode="markers+text",
@@ -1055,35 +1061,40 @@ with tab0:
         textposition="top center",
         textfont=dict(size=node_font_sizes),
         hoverinfo="text",
-        hovertext=[f"역명: {name}" + (f"<br>환승: {', '.join(TRANSFER_INFO[name])}" if TRANSFER_INFO.get(name) and any(TRANSFER_INFO[name]) else "") for name in node_names],
-        customdata=node_names,  # 클릭 연동을 위해 customdata 속성에 역명 주입
+        hovertext=[f"역명: {name}" + (f"<br>환승 노선: {', '.join(TRANSFER_INFO[name])}" if TRANSFER_INFO.get(name) and any(TRANSFER_INFO[name]) else "") for name in node_names],
+        customdata=node_names,  # Plotly 클릭 이벤트를 잡아 세션과 연동하기 위해 customdata에 역명 주입
         showlegend=False
     ))
 
-    # 5. Add real-time train markers
+    # 5. 실시간 열차 마커 위치 그리기
     train_x = []
     train_y = []
     train_hover = []
     train_colors = []
     train_symbols = []
 
+    # 열차 상태 코드 매핑 딕셔너리
     stt_map = {"0": "진입 중", "1": "도착 (정차 중)", "2": "출발 (주행 중)"}
 
     for t in trains:
         station_name = t.get("statnNm", "")
+        # API 상의 역명과 매치되는 2호선 공식 역 탐색
         target_stn = next((s for s in STATIONS if station_name in s), None)
         
         if target_stn and target_stn in station_coords:
             x_c, y_c, line_type = station_coords[target_stn]
             
             is_up = t.get("updnLine", "0") == "0"
+            # 내선과 외선 열차가 겹치지 않도록 반지름 오프셋 적용 (상행은 바깥쪽, 하행은 안쪽)
             offset = 0.85 if is_up else -0.85
             
             if line_type == "main":
+                # 순환선의 기하학적 형태에 맞추어 중심 원점 기준 각 방향으로 라디알 오프셋 가산
                 dist = np.sqrt(x_c**2 + y_c**2)
                 x_val = x_c * (1 + offset/dist)
                 y_val = y_c * (1 + offset/dist)
             else:
+                # 지선의 경우 선로 우측/좌측으로 나란히 수평 이동 오프셋 적용
                 x_val = x_c + offset
                 y_val = y_c
 
@@ -1095,14 +1106,15 @@ with tab0:
             train_hover.append(
                 f"🚊 <b>열차번호 {t.get('trainNo')}</b><br>"
                 f"━━━━━━━━━━━━━━━━━━<br>"
-                f"방향: <span style='color:#3b82f6;'>{direction}</span><br>"
+                f"운행 방향: <span style='color:#3b82f6;'>{direction}</span><br>"
                 f"현재 위치: <b>{target_stn}역</b> ({status})<br>"
-                f"행선지: <span style='color:#ef4444;'>{t.get('statnTnm', '순환')}행</span>"
+                f"최종 목적지: <span style='color:#ef4444;'>{t.get('statnTnm', '순환')}행</span>"
             )
-            # 네온 컬러 스키마 지정 (상행: 밝은 파랑, 하행: 오렌지)
+            # 네온 컬러 테마 적용 (상행/내선: 파란색, 하행/외선: 오렌지색)
             train_colors.append("#3b82f6" if is_up else "#f97316")
             train_symbols.append("triangle-up" if is_up else "triangle-down")
 
+    # 수집된 열차가 있는 경우 지도에 플롯 레이어 추가
     if train_x:
         fig_map.add_trace(go.Scatter(
             x=train_x, y=train_y,
@@ -1118,7 +1130,7 @@ with tab0:
             name="실시간 열차"
         ))
 
-    # Upgrade layout parameters (transparent backgrounds to inherit Streamlit themes)
+    # Plotly 레이아웃 스타일 설정 (투명 배경 처리 및 축 숨김 처리로 깔끔한 대시보드 유지)
     fig_map.update_layout(
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-28, 28]),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-28, 28]),
@@ -1139,25 +1151,25 @@ with tab0:
         ),
     )
     
-    # Activate on_select="rerun" in st.plotly_chart to capture click events
+    # st.plotly_chart 호출부에 on_select="rerun"을 활성화하여 지도 내 마커 클릭 상호작용 활성화
     selection = st.plotly_chart(fig_map, use_container_width=True, on_select="rerun")
     
-    # Map marker click event handler
+    # 지도의 역 마커 클릭 이벤트 핸들러
     if selection and "selection" in selection and "points" in selection["selection"]:
         points = selection["selection"]["points"]
         if points:
             clicked_point = points[0]
-            # Check if customdata (station name) exists in the clicked marker
+            # 클릭한 노드의 customdata(역명)가 정상적으로 할당되어 있는지 점검
             if "customdata" in clicked_point and clicked_point["customdata"]:
                 clicked_station = clicked_point["customdata"]
-                # 세션 데이터와 상이할 경우 업데이트 후 즉시 화면을 갱신(Rerun)
+                # 세션에 저장된 역명과 달라질 경우에만 상태를 세션에 업데이트하고 화면 갱신
                 if clicked_station != st.session_state.get("selected_station"):
                     st.session_state["selected_station"] = clicked_station
                     st.rerun()
 
     st.markdown("⚠️ 실시간 열차 마커의 삼각형 방향은 **상행/내선순환(▲, 파랑)** 및 **하행/외선순환(▼, 주황)**을 나타내며, 외곽선이 굵은 하늘색 노드는 **현재 설정된 역**을 표기합니다. <b>지도의 역 마커를 직접 클릭하여 관심 역을 즉시 조회할 수 있습니다.</b>", unsafe_allow_html=True)
 
-    # 6. Render real-time arrival list for selected station
+    # 6. 선택된 역의 실시간 도착 정보 렌더링
     st.markdown("---")
     st.subheader(f"⏱️ {selected_station}역 실시간 도착 정보")
     
@@ -1167,19 +1179,18 @@ with tab0:
     if arrival_data:
         arr_cols = st.columns(2)
         
-        # 내선순환(상행) 및 외선순환(하행) 그룹핑
+        # 수신된 실시간 도착 정보를 상행(내선)과 하행(외선)으로 필터링 및 분류
         up_trains = [a for a in arrival_data if a.get("updnLine") in ["내선", "상행"]]
         down_trains = [a for a in arrival_data if a.get("updnLine") in ["외선", "하행"]]
         
-        # 내선순환 표시
+        # 내선순환 열차 리스트 출력
         with arr_cols[0]:
             st.markdown("### 🔵 내선순환 (상행)")
             if up_trains:
                 for idx, arr in enumerate(up_trains):
-                    # 도착 메시지 (ex: "3분 20초 후", "전역 도착")
+                    # 도착 예측 상세 메시지 파싱 (예: "3분 후 진입", "전역 도착")
                     msg = arr.get("arvlMsg2", "정보 없음")
                     train_no = arr.get("btrainNo", "미정")
-                    dest = arr.get("btrainSttus", "순환")  # 행선지
                     dest_nm = arr.get("trainLineNm", "내선순환")
                     
                     st.markdown(
@@ -1194,14 +1205,13 @@ with tab0:
             else:
                 st.info("현재 조회 가능한 내선순환 열차가 없습니다.")
                 
-        # 외선순환 표시
+        # 외선순환 열차 리스트 출력
         with arr_cols[1]:
             st.markdown("### 🟠 외선순환 (하행)")
             if down_trains:
                 for idx, arr in enumerate(down_trains):
                     msg = arr.get("arvlMsg2", "정보 없음")
                     train_no = arr.get("btrainNo", "미정")
-                    dest = arr.get("btrainSttus", "순환")
                     dest_nm = arr.get("trainLineNm", "외선순환")
                     
                     st.markdown(
@@ -1218,9 +1228,9 @@ with tab0:
     else:
         st.info("실시간 도착 정보가 존재하지 않거나 가져오는데 실패했습니다.")
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ================================================================================
 # TAB 1: 시간대별 예측
-# ════════════════════════════════════════════════════════════════════════════════
+# ================================================================================
 with tab1:
     col_info, col_metric = st.columns([3, 2])
 
@@ -1230,10 +1240,11 @@ with tab1:
         day_str = day_names[dt.weekday()]
         st.caption(f"{day_str}요일 · 기온 {temp}°C · 강수량 {rain}mm · 적설 {snow}mm")
 
-    # 선택 시간 예측
+    # 설정된 조건(역, 날짜, 시간, 기상 정보 등)으로 예측 연산 수행
     board_now, alight_now = predict(selected_station, dt, selected_hour, temp, rain, snow, active_model)
     cong_label, cong_color, cong_bg = get_congestion(board_now, selected_station)
 
+    # 상단 요약 영역에 현재 지정 시간의 예상 혼잡도 카드 렌더링
     with col_metric:
         st.markdown(f"""
         <div style="background:{cong_bg}; border-radius:10px; padding:12px 16px; text-align:center; border:1px solid {cong_color}33;">
@@ -1242,7 +1253,7 @@ with tab1:
         </div>
         """, unsafe_allow_html=True)
 
-    # 선택 시간 메트릭
+    # 예상 승하차 인원 메트릭 및 평일/주말 평균 대비 증감 수치 출력
     m1, m2, m3 = st.columns(3)
     with m1:
         st.metric("🔼 예상 승차인원", f"{board_now:,}명", help="선택한 시간대 예상 승차인원")
@@ -1255,36 +1266,35 @@ with tab1:
 
     st.divider()
 
-    # 하루 전체 예측 그래프
+    # 하루 전체 시간대(05시 ~ 23시)의 승하차 패턴 일괄 예측 연산
     hours, boards, alights = predict_day(selected_station, dt, temp, rain, snow, active_model)
 
     fig = go.Figure()
 
-    # 출근 피크 음영
+    # 출근 시간대 피크 영역 하이라이트 음영 처리 (06:30 ~ 09:30)
     fig.add_vrect(
         x0=6.5, x1=9.5,
         fillcolor="rgba(59, 130, 246, 0.1)",
         line_width=0,
-        annotation_text="출근", annotation_position="top left",
+        annotation_text="출근 피크", annotation_position="top left",
         annotation_font_size=11, annotation_font_color="#3b82f6",
     )
 
-    # 퇴근 피크 음영
+    # 퇴근 시간대 피크 영역 하이라이트 음영 처리 (17:50 ~ 20:30)
     fig.add_vrect(
         x0=17.5, x1=20.5,
         fillcolor="rgba(245, 158, 11, 0.1)",
         line_width=0,
-        annotation_text="퇴근", annotation_position="top left",
+        annotation_text="퇴근 피크", annotation_position="top left",
         annotation_font_size=11, annotation_font_color="#f59e0b",
     )
-# ... [이하 생략 - 나머지 탭2, 탭3 구현은 동일하게 유지되며, 탭4 및 신설 탭5를 아래에 명시합니다] ...
 
-    # 선택 시간 수직선
+    # 사용자가 슬라이더로 선택한 기준 시간대를 차트 상에 보라색 점선으로 표기
     fig.add_vline(x=selected_hour, line_dash="dot", line_color="#6366f1", line_width=2,
                   annotation_text=f"선택: {selected_hour}시", annotation_position="top right",
                   annotation_font_color="#6366f1")
 
-    # 승차 라인
+    # 승차 예측 곡선 플롯 (파란색 라인)
     fig.add_trace(go.Scatter(
         x=hours, y=boards,
         mode="lines+markers",
@@ -1297,7 +1307,7 @@ with tab1:
         hovertemplate="%{x}시 승차 %{y:,}명<extra></extra>",
     ))
 
-    # 하차 라인
+    # 하차 예측 곡선 플롯 (녹색 라인)
     fig.add_trace(go.Scatter(
         x=hours, y=alights,
         mode="lines+markers",
@@ -1326,7 +1336,7 @@ with tab1:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # 피크 요약
+    # 승/하차 인원이 가장 극대화되는 피크 타임 및 피크 인원 파악
     max_board_hr = hours[np.argmax(boards)]
     max_board    = max(boards)
     max_alight_hr = hours[np.argmax(alights)]
@@ -1334,23 +1344,23 @@ with tab1:
 
     c1, c2 = st.columns(2)
     with c1:
-        st.info(f"🔵 **승차 피크**: {max_board_hr}시 ({max_board:,}명)")
+        st.info(f"🔵 **승차 피크 시간대**: {max_board_hr}시 ({max_board:,}명)")
     with c2:
-        st.success(f"🟢 **하차 피크**: {max_alight_hr}시 ({max_alight:,}명)")
+        st.success(f"🟢 **하차 피크 시간대**: {max_alight_hr}시 ({max_alight:,}명)")
 
 # ================================================================================
-# TAB 2: Weather Impact Simulator
+# TAB 2: 날씨 영향도 비교
 # ================================================================================
 with tab2:
     st.subheader(f"🌦 {selected_station}역 날씨 조건별 비교")
     st.caption(f"{selected_date} · {selected_hour}시 · 기온 {temp}°C 기준")
 
-    # 3가지 조건 예측
+    # 동일 시점에 맑음, 비, 눈이 내릴 때의 3대 시나리오 하의 승하차 예측 수행
     b_clear, a_clear = predict(selected_station, dt, selected_hour, temp, 0.0, 0.0)
     b_rain,  a_rain  = predict(selected_station, dt, selected_hour, temp, 10.0, 0.0)
     b_snow,  a_snow  = predict(selected_station, dt, selected_hour, temp-5, 0.0, 5.0)
 
-    # 카드
+    # 3대 기상 조건별 결과 카드 출력
     c1, c2, c3 = st.columns(3)
     conditions = [
         ("☀️ 맑음",  b_clear, a_clear, "#fef9c3", "#854d0e", "0mm 강수"),
@@ -1374,18 +1384,18 @@ with tab2:
 
     st.divider()
 
-    # 비교 그래프 (하루 전체)
+    # 3가지 기상 조건에 따른 하루 승차 추이 통합 선 그래프
     st.subheader("하루 전체 날씨 조건별 승차 비교")
     hours_s, b_c, _ = predict_day(selected_station, dt, temp, 0.0, 0.0)
     _,        b_r, _ = predict_day(selected_station, dt, temp, 10.0, 0.0)
     _,        b_n, _ = predict_day(selected_station, dt, temp-5, 0.0, 5.0)
 
     fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=hours_s, y=b_c, name="맑음",  line=dict(color="#f59e0b", width=2), mode="lines"))
-    fig2.add_trace(go.Scatter(x=hours_s, y=b_r, name="비",    line=dict(color="#3b82f6", width=2), mode="lines"))
-    fig2.add_trace(go.Scatter(x=hours_s, y=b_n, name="눈",    line=dict(color="#06b6d4", width=2, dash="dot"), mode="lines"))
+    fig2.add_trace(go.Scatter(x=hours_s, y=b_c, name="맑음 시나리오",  line=dict(color="#f59e0b", width=2), mode="lines"))
+    fig2.add_trace(go.Scatter(x=hours_s, y=b_r, name="비 시나리오",    line=dict(color="#3b82f6", width=2), mode="lines"))
+    fig2.add_trace(go.Scatter(x=hours_s, y=b_n, name="눈 시나리오",    line=dict(color="#06b6d4", width=2, dash="dot"), mode="lines"))
 
-    # 차이 표시
+    # 기상 악화 시 감소하는 최대 승객 편차 연산
     max_diff_rain = max([c-r for c,r in zip(b_c, b_r)])
     max_diff_snow = max([c-n for c,n in zip(b_c, b_n)])
 
@@ -1403,18 +1413,20 @@ with tab2:
     st.plotly_chart(fig2, use_container_width=True)
 
     col_a, col_b = st.columns(2)
+    # 맑음 대비 감소량 평균치 계산 및 리포트 제공
     rain_diff = round(np.mean([c-r for c,r in zip(b_c, b_r)]))
     snow_diff = round(np.mean([c-n for c,n in zip(b_c, b_n)]))
-    col_a.warning(f"🌧 비 올 때 평균 {rain_diff:,}명 감소")
-    col_b.info(f"❄️ 눈 올 때 평균 {snow_diff:,}명 감소")
+    col_a.warning(f"🌧 강수 시나리오: 맑은 날 대비 평균 {rain_diff:,}명 승객 감소")
+    col_b.info(f"❄️ 강설 시나리오: 맑은 날 대비 평균 {snow_diff:,}명 승객 감소")
 
 # ================================================================================
-# TAB 3: Station Congestion Rankings
+# TAB 3: 역별 혼잡도 랭킹
 # ================================================================================
 with tab3:
     st.subheader(f"🏆 2호선 전체 역 혼잡도 랭킹")
     st.caption(f"{selected_date} · {selected_hour}시 · 기온 {temp}°C · 강수량 {rain}mm")
 
+    # 전체 51개 역에 대해 실시간 예측을 병렬식 루프로 순회 연산
     with st.spinner("2호선 전체 역 예측 중..."):
         rankings = []
         for stn in STATIONS:
@@ -1484,7 +1496,7 @@ with tab3:
     st.plotly_chart(fig3, use_container_width=True)
 
 # ================================================================================
-# TAB 4: Smart Travel Planner (Optimal Departure Time)
+# TAB 4: 최적 출발 시간 플래너
 # ================================================================================
 with tab4:
     st.subheader("⏰ 최적 탑승 시간 추천")
@@ -1557,7 +1569,7 @@ with tab4:
     st.caption("💡 최적 탑승 시간은 출발역 + 도착역 혼잡도 합산 기준으로 계산됩니다.")
 
 # ================================================================================
-# TAB 5: AI Model Benchmark & Comparison
+# TAB 5: AI 모델별 예측치 비교
 # ================================================================================
 with tab5:
     st.subheader("🤖 개발 모델별 실시간 예측 결과 비교 분석")
@@ -1567,7 +1579,7 @@ with tab5:
     with col_comp_info:
         st.info(f"🚉 비교 대상역: **{selected_station}역** · **{selected_hour}시**기준")
     
-    # Evaluate only successfully loaded models
+    # 정상적으로 로드된 예측 모델 목록 선별
     model_list = [m_name for m_name, info in ALL_MODELS.items() if info.get("loaded", False)]
     comp_results = []
     
@@ -1585,20 +1597,20 @@ with tab5:
     comp_df = pd.DataFrame(comp_results)
     
     with col_comp_info:
-        # Render HTML table to preserve colors
+        # 가독성을 높이기 위해 HTML 렌더링으로 표 출력
         st.write(comp_df.to_html(escape=False, index=False), unsafe_allow_html=True)
         
-    # Render 24h charts for active models
+    # 모델별 24시간 추이선 차트 렌더링
     st.markdown("---")
     
     col_chart1, col_chart2 = st.columns(2)
     
-    # Model line color mappings
+    # 4대 AI 모델별 선 그래프 색상 설정
     model_colors = {
-        "XGBoost": "#3b82f6",     # Blue
-        "LightGBM": "#10b981",    # Green
-        "RandomForest": "#8b5cf6", # Purple
-        "LSTM": "#f43f5e"         # Ruby Red
+        "XGBoost": "#3b82f6",     # 파란색
+        "LightGBM": "#10b981",    # 초록색
+        "RandomForest": "#8b5cf6", # 보라색
+        "LSTM": "#f43f5e"         # 루비 레드
     }
     
     with col_chart1:
