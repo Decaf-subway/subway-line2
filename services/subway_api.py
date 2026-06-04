@@ -32,14 +32,11 @@ def check_holiday(dt):
     kr_hols = hd.KR(years=dt.year)
     if dt.date() in kr_hols:
         name = kr_hols.get(dt.date(), "공휴일")
-        htype = get_holiday_type(dt.date(), kr_hols)
-        if htype == 3:
-            return name, "설날·추석 연휴입니다. 평소보다 30~50% 한산할 것으로 예상됩니다."
-        return name, "공휴일입니다. 평소보다 20~40% 한산할 것으로 예상됩니다."
+        return name, f"오늘은 {name}입니다."
     prev_d = dt - timedelta(days=1)
     next_d = dt + timedelta(days=1)
     if next_d.date() in kr_hols:
-        return None, f"내일은 {kr_hols.get(next_d.date())}입니다. 귀성 인파로 일부 역이 혼잡할 수 있습니다."
+        return None, f"내일은 공휴일({kr_hols.get(next_d.date())})입니다."
     if prev_d.date() in kr_hols:
-        return None, f"어제가 공휴일이었습니다. 귀경 인파가 있을 수 있습니다."
+        return None, f"어제는 공휴일({kr_hols.get(prev_d.date())})이었습니다."
     return None, None
