@@ -103,9 +103,9 @@ ALL_LINE2_STATIONS = MAIN_LINE + SUNGSU_BRANCH + SINDORIM_BRANCH
 def load_lstm_base_dataset():
     path = "final_dataset_230101-241231.csv"
     if not os.path.exists(path):
-        path = "data/processed/final_datest_230101-241231.csv"
+        path = "data/processed/final_dataset_230101-241231.csv"
     if not os.path.exists(path):
-        path = "final_dataset_230101-241231.csv"
+        path = "final_dataset.csv"
     if not os.path.exists(path):
         return None
     try:
