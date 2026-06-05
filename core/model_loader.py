@@ -16,11 +16,7 @@ class PatchedEmbedding(keras.layers.Embedding):
 # ── LSTM 예측 모델 학습/추론용 과거 시계열 기준 데이터셋 로드 ──────────────────────────
 @st.cache_data
 def load_lstm_base_dataset():
-    path = "final_dataset_230101-241231.csv"
-    if not os.path.exists(path):
-        path = "data/processed/final_dataset_230101-241231.csv"
-    if not os.path.exists(path):
-        path = "final_dataset.csv"
+    path = "data/processed/final_dataset_230101-241231.csv"
     if not os.path.exists(path):
         return None
     try:
