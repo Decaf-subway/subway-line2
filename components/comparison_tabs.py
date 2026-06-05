@@ -4,6 +4,71 @@ import numpy as np
 import plotly.graph_objects as go
 from core.predictor import predict, predict_day, get_congestion
 
+@st.cache_data(show_spinner="📊 실제 가중치 기반 모델 오차율(MAE) 검증 데이터 분석 중...")
+def calculate_dynamic_metrics(_all_models, _le_station, _lstm_base_df, seed=42):
+    from sklearn.metrics import mean_absolute_error, r2_score
+    try:
+        df_all = pd.read_csv("data/processed/final_dataset_line2_230101-241231.csv")
+        df_all['날짜'] = pd.to_datetime(df_all['날짜'])
+        # Sample 100 rows from the end period of the dataset for validation
+        test_sample = df_all[df_all['날짜'] >= '2024-12-15'].sample(100, random_state=seed).reset_index(drop=True)
+    except Exception:
+        return []
+
+    results = []
+    # Order: LSTM, XGBoost, LightGBM, RandomForest
+    model_names = ["LSTM", "XGBoost", "LightGBM", "RandomForest"]
+    
+    for model_name in model_names:
+        m_info = _all_models.get(model_name, {})
+        if not m_info.get("loaded", False):
+            continue
+            
+        y_true_board = []
+        y_pred_board = []
+        
+        for _, row in test_sample.iterrows():
+            station = row['역명']
+            dt = row['날짜']
+            hour = row['시간']
+            temp = row['기온']
+            rain = row['강수량']
+            snow = row['적설']
+            y_true = row['승차인원']
+            
+            try:
+                b_pred, _ = predict(station, dt, hour, temp, rain, snow, model_name, _all_models, _le_station, _lstm_base_df)
+                y_true_board.append(y_true)
+                y_pred_board.append(b_pred)
+            except Exception:
+                pass
+                
+        if len(y_true_board) > 0:
+            mae = mean_absolute_error(y_true_board, y_pred_board)
+            r2 = r2_score(y_true_board, y_pred_board)
+            
+            r2_pct = max(0.0, r2 * 100)
+            
+            if r2 > 0.95 and mae < 150:
+                reliability = "🥇 최우수"
+            elif r2 > 0.90 and mae < 200:
+                reliability = "🥈 우수"
+            elif r2 > 0.70:
+                reliability = "🥉 보통"
+            else:
+                reliability = "⚠️ 낮음 (과적합/오차 과다)"
+                
+            results.append({
+                "예측 모델": model_name,
+                "평균 오차 (MAE)": f"약 {mae:.1f} 명",
+                "결정계수 (R² Score)": f"{r2_pct:.1f}% ({r2:.3f})",
+                "모델 신뢰 수준": reliability,
+                "mae_val": round(mae, 2)
+            })
+            
+    return results
+
+
 def render_comparison_tabs(tab4, tab5, selected_station, dt, selected_hour, temp, rain, snow, active_model, all_models, le_station, lstm_base_df, STATIONS):
     # ================================================================================
     # TAB 4: 최적 탑승 시간 추천
@@ -157,3 +222,65 @@ def render_comparison_tabs(tab4, tab5, selected_station, dt, selected_hour, temp
             
         st.divider()
         st.caption("💡 현재 정상적으로 로드되어 가동 중인 2호선 승하차 예측 AI 모델들의 실시간 예측 수치를 비교 대조합니다.")
+        
+        # ── 신설: AI 모델별 성능 분석 및 오답률(오차 평가) 리포트 섹션 ────────────────────────
+        st.markdown("---")
+        st.subheader("📊 AI 모델별 교차 검증 오차율 (오답률) 분석")
+        if "test_seed" not in st.session_state:
+            st.session_state.test_seed = 42
+
+        col_metric_desc, col_metric_btn = st.columns([3, 1])
+        with col_metric_desc:
+            st.markdown(f"팀 프로젝트 연구 및 개발 과정에서 검증용 테스트 데이터셋으로 도출한 각 머신러닝/딥러닝 모델별 평균 절대 오차(MAE) 및 결정계수($R^2$ Score) 검증 성적표입니다. (현재 검증 데이터 시드: **{st.session_state.test_seed}**)")
+        with col_metric_btn:
+            if st.button("🔄 무작위 재시험", help="새로운 100개 무작위 샘플 데이터를 기반으로 성능 오차율을 실시간으로 재연산합니다."):
+                import random
+                st.session_state.test_seed = random.randint(1, 10000)
+                st.rerun()
+        
+        dynamic_results = calculate_dynamic_metrics(all_models, le_station, lstm_base_df, seed=st.session_state.test_seed)
+        
+        if dynamic_results:
+            eval_df = pd.DataFrame(dynamic_results)
+            # Remove mae_val from displayed table columns
+            display_df = eval_df.drop(columns=["mae_val"])
+            
+            col_metric_tbl, col_metric_chart = st.columns([1, 1])
+            
+            with col_metric_tbl:
+                st.markdown(f"##### 🏆 검증 데이터셋(Test Set) 모델 평가 결과 (시드 {st.session_state.test_seed} 연산)")
+                st.write(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
+                st.caption(f"💡 MAE(평균 절대 오차)는 실제 승하차 승객 수와 모델 예측치 간의 오차 인원 평균으로, 수치가 낮을수록 정확합니다. (최근 2주 데이터 중 100행 샘플)")
+                
+            with col_metric_chart:
+                st.markdown("##### 📉 모델별 평균 절대 오차(MAE) 비교 시각화")
+                fig_mae = go.Figure()
+                
+                # 모델별 색상 매핑
+                m_colors = {"LSTM": "#f43f5e", "XGBoost": "#3b82f6", "LightGBM": "#10b981", "RandomForest": "#8b5cf6"}
+                bar_colors = [m_colors.get(m, "#64748b") for m in eval_df["예측 모델"]]
+                
+                fig_mae.add_trace(go.Bar(
+                    x=eval_df["예측 모델"],
+                    y=eval_df["mae_val"],
+                    marker_color=bar_colors,
+                    hovertemplate="%{x} MAE: %{y}명<extra></extra>",
+                    text=[f"{v}명" for v in eval_df["mae_val"]],
+                    textposition="auto"
+                ))
+                
+                fig_mae.update_layout(
+                    xaxis=dict(title="평가 대상 AI 모델"),
+                    yaxis=dict(title="평균 오차 인원 (명)"),
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                    height=250,
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    showlegend=False
+                )
+                fig_mae.update_yaxes(showgrid=True, gridcolor="#f1f5f9")
+                st.plotly_chart(fig_mae, use_container_width=True)
+        else:
+            st.error("모델 성능 검증 데이터를 불러올 수 없거나 연산 중 오류가 발생했습니다.")
+
+
