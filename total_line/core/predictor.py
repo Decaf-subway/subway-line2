@@ -256,6 +256,30 @@ def predict(station, dt, hour, temp, rain=0.0, snow=0.0, model_name="LSTM", all_
 
         b = int(np.clip(m_info["board"].predict(X_xgb), 0, None)[0])
         a = int(np.clip(m_info["alight"].predict(X_xgb), 0, None)[0])
+    elif model_name == "RandomForest":
+        station_name, line_name = _station_key_parts(station)
+        rf_le_station = m_info.get("le_station")
+        rf_le_line = m_info.get("le_line")
+        columns = m_info.get("columns") or list(getattr(m_info["board"], "feature_names_in_", []))
+        if not columns:
+            columns = ["역명_encoded", "호선_encoded", "시간", "요일", "월", "일", "공휴일여부", "기온", "강수량", "적설"]
+
+        row_rf = {
+            "역명_encoded": _safe_label_transform(rf_le_station, station_name),
+            "호선_encoded": _safe_label_transform(rf_le_line, line_name),
+            "시간": int(hour),
+            "요일": int(dt.weekday()),
+            "월": int(dt.month),
+            "일": int(dt.day),
+            "공휴일여부": int(is_hol),
+            "기온": float(temp),
+            "강수량": float(rain),
+            "적설": float(snow),
+        }
+        X_rf = pd.DataFrame([row_rf])[columns]
+
+        b = int(np.clip(m_info["board"].predict(X_rf), 0, None)[0])
+        a = int(np.clip(m_info["alight"].predict(X_rf), 0, None)[0])
     else:
         raise ValueError(f"Model '{model_name}' is not supported in the 1-8 line app.")
 

@@ -135,4 +135,23 @@ def load_all_models():
         print(f"[경고] 1-8호선 XGBoost 모델 로드 실패: {e}")
         models["XGBoost"] = {"loaded": False}
 
+    try:
+        board_model = joblib.load(BASE_DIR / "models" / "randomforest" / "randomforest_boarding_model.pkl")
+        alight_model = joblib.load(BASE_DIR / "models" / "randomforest" / "randomforest_dropoff_model.pkl")
+        columns = joblib.load(BASE_DIR / "models" / "randomforest" / "model_columns.pkl")
+        le_rf_station = joblib.load(BASE_DIR / "models" / "randomforest" / "station_encoder.pkl")
+        le_rf_line = joblib.load(BASE_DIR / "models" / "randomforest" / "line_encoder.pkl")
+
+        models["RandomForest"] = {
+            "board": board_model,
+            "alight": alight_model,
+            "columns": list(columns),
+            "le_station": le_rf_station,
+            "le_line": le_rf_line,
+            "loaded": True,
+        }
+    except Exception as e:
+        print(f"[경고] 1-8호선 RandomForest 모델 로드 실패: {e}")
+        models["RandomForest"] = {"loaded": False}
+
     return models, le_station, any(info.get("loaded", False) for info in models.values())
