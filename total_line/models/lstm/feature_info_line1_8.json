@@ -1,0 +1,24 @@
+{
+  "time_steps": 12,
+  "features": [
+    "승차인원",
+    "하차인원",
+    "시간",
+    "요일",
+    "월",
+    "공휴일여부",
+    "기온",
+    "강수량",
+    "적설",
+    "요일_시간",
+    "역별_평균_승차",
+    "역별_평균_하차"
+  ],
+  "n_features": 12,
+  "n_stations": 285,
+  "n_lines": 8,
+  "embedding_dim_station": 16,
+  "embedding_dim_line": 4,
+  "station_key_format": "역명_호선  (예: 강남_2호선)",
+  "multi_line_stations": 33
+}

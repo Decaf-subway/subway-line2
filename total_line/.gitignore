@@ -1,0 +1,33 @@
+# 1. OS & IDE 임시 파일
+.DS_Store
+.vscode/
+.idea/
+*.suo
+*.sln
+
+# 2. 파이썬 가상환경 및 캐시
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+ENV/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# 3. 환경 변수 및 보안 파일 (API Key 유출 방지)
+.env
+
+# 4. 대용량 데이터 파일 (CSV, Excel)
+# 100MB 한계 및 푸시 지연 방지를 위해 로컬 데이터 제외
+*.csv
+*.xlsx
+
+# 5. 머신러닝/딥러닝 모델 가중치 (바이너리 대용량 파일)
+*.pkl
+*.joblib
+*.keras
+*.h5
+models/**/*.pkl
+models/**/*.keras
+models/**/*.joblib
