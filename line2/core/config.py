@@ -1,5 +1,8 @@
 import os
 import json
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[1]
 
 # ── 2호선 역 목록 상수 정의 (실제 순환선 정거장 순서대로 배열) ─────────────────────────
 MAIN_LINE = [
@@ -20,9 +23,10 @@ ALL_LINE2_STATIONS = MAIN_LINE + SUNGSU_BRANCH + SINDORIM_BRANCH
 
 # ── 지하철 호선별 정적 환승역 정보 로딩 (노선도 맵핑 및 팝업용) ──────────────────────────
 TRANSFER_INFO = {}
-if os.path.exists("data/transfer_info.json"):
+transfer_info_path = BASE_DIR / "data" / "transfer_info.json"
+if os.path.exists(transfer_info_path):
     try:
-        with open("data/transfer_info.json", "r", encoding="utf-8") as f:
+        with open(transfer_info_path, "r", encoding="utf-8") as f:
             TRANSFER_INFO = json.load(f)
     except Exception:
         pass

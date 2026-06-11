@@ -5,6 +5,12 @@
 """
 
 import os
+import sys
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 # TensorFlow의 macOS Metal 플러그인 초기화 지연 방지 (CPU 모드 강제)
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -25,8 +31,9 @@ from components.styles import inject_custom_styles
 inject_custom_styles()
 
 # ── 3. 환경변수 로딩 ─────────────────────────────────────────────────────────────
-if os.path.exists(".env"):
-    with open(".env", "r", encoding="utf-8") as f:
+env_path = BASE_DIR / ".env"
+if env_path.exists():
+    with open(env_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
