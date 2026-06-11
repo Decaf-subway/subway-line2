@@ -678,20 +678,21 @@ def render_route_map(route_orders, selected_station, selected_line):
 
 
 @st.cache_data(show_spinner=False)
-def load_metric_sample(line_key, sample_size=100, seed=42):
+def load_metric_sample(station_key, sample_size):
     if not DATASET_PATH.exists():
         return pd.DataFrame()
 
+    station_name, line_name = station_key.rsplit("_", 1)
     df = pd.read_csv(
         DATASET_PATH,
         usecols=["날짜", "역명", "호선", "시간", "승차인원", "하차인원", "기온", "강수량", "적설"],
         parse_dates=["날짜"],
     )
-    matched = df[(df["호선"].astype(str) == line_key) & (df["날짜"] >= "2024-12-15")].copy()
+    matched = df[(df["역명"].astype(str) == station_name) & (df["호선"].astype(str) == line_name)].copy()
     if matched.empty:
         return matched
 
-    return matched.sample(min(sample_size, len(matched)), random_state=seed).reset_index(drop=True)
+    return matched.sort_values(["날짜", "시간"]).tail(sample_size).reset_index(drop=True)
 
 
 def calculate_mae(y_true, y_pred):
@@ -741,39 +742,11 @@ TRANSFER_INFO = load_transfer_info()
 
 inject_custom_styles()
 
-if "dashboard_mode" not in st.session_state:
-    st.session_state["dashboard_mode"] = "1-8호선 통합"
-
-nav_col1, nav_col2 = st.columns(2)
-with nav_col1:
-    if st.button(
-        "1-8호선 통합",
-        type="primary" if st.session_state["dashboard_mode"] == "1-8호선 통합" else "secondary",
-        use_container_width=True,
-    ):
-        st.session_state["dashboard_mode"] = "1-8호선 통합"
-
-with nav_col2:
-    if st.button(
-        "2호선 전용",
-        type="primary" if st.session_state["dashboard_mode"] == "2호선 전용" else "secondary",
-        use_container_width=True,
-    ):
-        st.session_state["dashboard_mode"] = "2호선 전용"
-
-st.divider()
-
-if st.session_state["dashboard_mode"] == "2호선 전용":
-    from line2_dashboard import render_line2_dashboard
-
-    render_line2_dashboard()
-    st.stop()
-
 LSTM_BASE_DF = load_lstm_base_dataset()
 ALL_MODELS, le_station, model_loaded = load_all_models()
 
 if not model_loaded:
-    st.error("사용 가능한 예측 모델을 찾지 못했습니다. `total_line/models/` 경로를 확인해 주세요.")
+    st.error("사용 가능한 예측 모델을 찾지 못했습니다. `models/` 경로를 확인해 주세요.")
     st.stop()
 
 STATIONS = sorted(list(le_station.classes_)) if le_station is not None else []
@@ -1394,15 +1367,12 @@ with tab5:
 
     st.divider()
     st.subheader("정량 성능 비교")
-    metric_sample_size = 100
-    if "model_metrics_by_line" not in st.session_state:
-        st.session_state["model_metrics_by_line"] = {}
+    metric_sample_size = 48
 
     if st.button("MAE 상태 계산", key="calculate_model_metrics"):
-        metric_seed = int(np.random.randint(1, 1_000_000))
-        metric_sample = load_metric_sample(selected_line, metric_sample_size, seed=metric_seed)
+        metric_sample = load_metric_sample(selected_station, metric_sample_size)
         if metric_sample.empty:
-            st.warning("선택한 호선의 정량 비교용 관측 데이터를 찾지 못했습니다.")
+            st.warning("선택한 역의 정량 비교용 관측 데이터를 찾지 못했습니다.")
         else:
             with st.spinner("모델별 MAE를 계산하는 중..."):
                 metric_rows = []
@@ -1415,9 +1385,8 @@ with tab5:
 
                         for _, row in metric_sample.iterrows():
                             sample_dt = pd.to_datetime(row["날짜"]).to_pydatetime()
-                            sample_station = f"{row['역명']}_{row['호선']}"
                             b_val, a_val = predict(
-                                sample_station,
+                                selected_station,
                                 sample_dt,
                                 int(row["시간"]),
                                 float(row["기온"]),
@@ -1435,17 +1404,18 @@ with tab5:
 
                         board_mae = calculate_mae(board_true, board_pred)
                         alight_mae = calculate_mae(alight_true, alight_pred)
-                        avg_mae = (board_mae + alight_mae) / 2
                         metric_rows.append({
                             "모델": model_name,
-                            "평균 MAE": avg_mae,
-                            "_평균 MAE": avg_mae,
+                            "승차 MAE": board_mae,
+                            "하차 MAE": alight_mae,
+                            "_평균 MAE": (board_mae + alight_mae) / 2,
                             "상태": "",
                         })
                     except Exception:
                         metric_rows.append({
                             "모델": model_name,
-                            "평균 MAE": np.nan,
+                            "승차 MAE": np.nan,
+                            "하차 MAE": np.nan,
                             "_평균 MAE": np.nan,
                             "상태": "계산 실패",
                         })
@@ -1456,18 +1426,10 @@ with tab5:
                 if row["상태"] != "계산 실패":
                     row["상태"] = label_mae_status(row["_평균 MAE"], best_avg_mae)
 
-            metric_df = pd.DataFrame(metric_rows)[["모델", "평균 MAE", "상태"]]
+            metric_df = pd.DataFrame(metric_rows)[["모델", "승차 MAE", "하차 MAE", "상태"]]
             display_metric_df = metric_df.copy()
-            display_metric_df["평균 MAE"] = display_metric_df["평균 MAE"].map(lambda value: "-" if pd.isna(value) else f"{value:,.1f}")
+            for col in ["승차 MAE", "하차 MAE"]:
+                display_metric_df[col] = display_metric_df[col].map(lambda value: "-" if pd.isna(value) else f"{value:,.1f}")
 
-            st.session_state["model_metrics_by_line"][selected_line] = {
-                "caption": f"{selected_line} · 2024-12-15 이후 100개 랜덤 샘플 · 승하차 MAE 평균 · seed {metric_seed}",
-                "data": display_metric_df,
-            }
-
-    cached_metric = st.session_state["model_metrics_by_line"].get(selected_line)
-    if cached_metric:
-        st.caption(cached_metric["caption"])
-        st.dataframe(cached_metric["data"], use_container_width=True, hide_index=True)
-    else:
-        st.info(f"{selected_line} 정량 성능 비교는 아직 계산되지 않았습니다. 버튼을 누르면 이 호선 기준 결과가 저장됩니다.")
+            st.caption(f"{format_station_label(selected_station)} · 최근 {len(metric_sample):,}개 관측값 기준")
+            st.dataframe(display_metric_df, use_container_width=True, hide_index=True)

@@ -4,7 +4,10 @@ import numpy as np
 import joblib
 import keras
 import streamlit as st
+from pathlib import Path
 from core.config import ALL_LINE2_STATIONS
+
+BASE_DIR = Path(__file__).resolve().parents[1]
 
 # ── Keras 3 호환용 패치 클래스 선언 ──────────────────────────────────────────
 @keras.saving.register_keras_serializable(package="Custom")
@@ -16,7 +19,7 @@ class PatchedEmbedding(keras.layers.Embedding):
 # ── LSTM 예측 모델 학습/추론용 과거 시계열 기준 데이터셋 로드 ──────────────────────────
 @st.cache_data
 def load_lstm_base_dataset():
-    path = "data/processed/final_dataset_line2_230101-241231.csv"
+    path = BASE_DIR / "data" / "processed" / "final_dataset_line2_230101-241231.csv"
     if not os.path.exists(path):
         return None
     try:
@@ -51,15 +54,15 @@ def load_all_models():
     le_station = None
     
     try:
-        le_station = joblib.load("models/xgboost/label_encoder_station_line2.pkl")
+        le_station = joblib.load(BASE_DIR / "models" / "xgboost" / "label_encoder_station_line2.pkl")
     except Exception as e:
         print(f"[경고] 공통 label_encoder_station_line2.pkl 로드 실패 (XGBoost/LightGBM 사용 불가): {e}")
 
     # 1. XGBoost
     try:
         models["XGBoost"] = {
-            "board": joblib.load("models/xgboost/xgb_board_model_line2.pkl"),
-            "alight": joblib.load("models/xgboost/xgb_alight_model_line2.pkl"),
+            "board": joblib.load(BASE_DIR / "models" / "xgboost" / "xgb_board_model_line2.pkl"),
+            "alight": joblib.load(BASE_DIR / "models" / "xgboost" / "xgb_alight_model_line2.pkl"),
             "loaded": True
         }
     except Exception as e:
@@ -69,8 +72,8 @@ def load_all_models():
     # 2. LightGBM
     try:
         models["LightGBM"] = {
-            "board": joblib.load("models/lightgbm/lgb_boadin_model_line2.pkl"),
-            "alight": joblib.load("models/lightgbm/lgb_alight_model_line2.pkl"),
+            "board": joblib.load(BASE_DIR / "models" / "lightgbm" / "lgb_boadin_model_line2.pkl"),
+            "alight": joblib.load(BASE_DIR / "models" / "lightgbm" / "lgb_alight_model_line2.pkl"),
             "loaded": True
         }
     except Exception as e:
@@ -80,9 +83,9 @@ def load_all_models():
     # 3. RandomForest
     try:
         models["RandomForest"] = {
-            "board": joblib.load("models/randomforest/randomforest_boarding_model_line2.pkl"),
-            "alight": joblib.load("models/randomforest/randomforest_dropoff_model_line2.pkl"),
-            "cols": joblib.load("models/randomforest/model_boardin_columns_line2.pkl"),
+            "board": joblib.load(BASE_DIR / "models" / "randomforest" / "randomforest_boarding_model_line2.pkl"),
+            "alight": joblib.load(BASE_DIR / "models" / "randomforest" / "randomforest_dropoff_model_line2.pkl"),
+            "cols": joblib.load(BASE_DIR / "models" / "randomforest" / "model_boardin_columns_line2.pkl"),
             "loaded": True
         }
     except Exception as e:
@@ -92,24 +95,24 @@ def load_all_models():
     # 4. LSTM
     try:
         m_board = keras.models.load_model(
-            "models/lstm/lstm_boarding_line2.keras", 
+            BASE_DIR / "models" / "lstm" / "lstm_boarding_line2.keras",
             custom_objects={'Embedding': PatchedEmbedding}, 
             compile=False
         )
         m_alight = keras.models.load_model(
-            "models/lstm/lstm_alighting_line2.keras", 
+            BASE_DIR / "models" / "lstm" / "lstm_alighting_line2.keras",
             custom_objects={'Embedding': PatchedEmbedding}, 
             compile=False
         )
         
         try:
             m_board_jamsil = keras.models.load_model(
-                "models/lstm/lstm_boarding_잠실_line2.keras", 
+                BASE_DIR / "models" / "lstm" / "lstm_boarding_잠실_line2.keras",
                 custom_objects={'Embedding': PatchedEmbedding}, 
                 compile=False
             )
             m_alight_jamsil = keras.models.load_model(
-                "models/lstm/lstm_alighting_잠실_line2.keras", 
+                BASE_DIR / "models" / "lstm" / "lstm_alighting_잠실_line2.keras",
                 custom_objects={'Embedding': PatchedEmbedding}, 
                 compile=False
             )
@@ -117,12 +120,12 @@ def load_all_models():
             m_board_jamsil = m_board
             m_alight_jamsil = m_alight
 
-        scaler_path = "models/lstm/scaler_line2.pkl"
+        scaler_path = BASE_DIR / "models" / "lstm" / "scaler_line2.pkl"
         if not os.path.exists(scaler_path):
-            scaler_path = "models/lstm/scaler_x_line2.pkl"
+            scaler_path = BASE_DIR / "models" / "lstm" / "scaler_x_line2.pkl"
             
         scaler = joblib.load(scaler_path)
-        le_lstm = joblib.load("models/lstm/label_encoder_line2.pkl")
+        le_lstm = joblib.load(BASE_DIR / "models" / "lstm" / "label_encoder_line2.pkl")
 
         models["LSTM"] = {
             "board": m_board,
