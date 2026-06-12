@@ -6,6 +6,7 @@
 import json
 import os
 import sys
+import re
 from datetime import date, datetime
 from pathlib import Path
 
@@ -25,7 +26,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 from components.styles import inject_custom_styles
 from core.model_loader import load_all_models, load_lstm_base_dataset
 from core.predictor import get_congestion, get_station_avg, predict, predict_day
-from services.subway_api import check_holiday
+from services.subway_api import check_holiday, get_realtime_station_arrival, get_realtime_train_positions
 from services.weather_api import get_weather_with_fallback
 
 
@@ -442,6 +443,56 @@ def compact_station_label(station_name):
     return station_name.split("(", 1)[0]
 
 
+def arrival_time_text(arr):
+    if isinstance(arr, dict):
+        seconds_text = str(arr.get("barvlDt", "")).strip()
+        if seconds_text.isdigit():
+            seconds = int(seconds_text)
+            if seconds > 0:
+                minutes, remain_seconds = divmod(seconds, 60)
+                if minutes and remain_seconds:
+                    return f"{minutes}분 {remain_seconds}초 후"
+                if minutes:
+                    return f"{minutes}분 후"
+                return f"{remain_seconds}초 후"
+
+        text = str(arr.get("arvlMsg2") or arr.get("arvlMsg3") or "").strip()
+    else:
+        text = str(arr or "").strip()
+
+    if not text:
+        return "정보 없음"
+    text = re.sub(r"\s*\d+번째\s*전역.*$", "", text)
+    text = re.sub(r"\s*\d+번째전역.*$", "", text)
+    text = text.strip()
+    return text or "정보 없음"
+
+
+def direction_title(selected_line, direction):
+    if selected_line == "2호선":
+        return "내선순환 (상행)" if direction == "up" else "외선순환 (하행)"
+    return "상행" if direction == "up" else "하행"
+
+
+def render_arrival_card(arr, accent="#3b82f6"):
+    msg = arrival_time_text(arr)
+    train_line = str(arr.get("trainLineNm") or "").strip()
+    train_no = str(arr.get("btrainNo") or "").strip()
+    train_info = train_line or "열차 정보"
+    if train_no:
+        train_info = f"{train_info} (열차 {train_no}호)"
+
+    st.markdown(
+        f"""
+        <div style="background:#f1f5f9; padding:12px 16px; border-radius:8px; margin-bottom:10px; border-left:4px solid {accent};">
+            <span style="font-size:15px; font-weight:700; color:#1e293b;">{train_info}</span><br>
+            <span style="font-size:18px; font-weight:700; color:{accent};">{msg}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def interpolate_polyline(points, count):
     if count <= 0:
         return []
@@ -594,7 +645,7 @@ def build_route_segments(line, station_keys):
     return [{"name": line, "station_keys": station_keys, "coords": interpolate_polyline(shape_points, len(station_keys)), "closed": False}]
 
 
-def render_route_map(route_orders, selected_station, selected_line):
+def render_route_map(route_orders, selected_station, selected_line, seoul_key=None):
     if selected_line not in route_orders:
         st.warning("노선도에 사용할 역 순서 데이터를 찾지 못했습니다.")
         return
@@ -624,7 +675,7 @@ def render_route_map(route_orders, selected_station, selected_line):
             is_selected = station_key == selected_station
             is_transfer = station_name in transfer_names
             marker_sizes.append(16 if is_selected else 9 if is_transfer else 6)
-            station_labels.append(compact_station_label(station_name) if is_selected or is_transfer or idx in (0, len(segment_keys) - 1) else "")
+            station_labels.append(compact_station_label(station_name))
             hover_labels.append(f"{station_name} ({selected_line})")
 
         fig.add_trace(go.Scatter(
@@ -646,7 +697,7 @@ def render_route_map(route_orders, selected_station, selected_line):
             ),
             text=station_labels,
             textposition="top center",
-            textfont=dict(size=11, color="#111827"),
+            textfont=dict(size=9, color="#111827"),
             customdata=hover_labels,
             hovertemplate="%{customdata}<extra></extra>",
             showlegend=False,
@@ -663,6 +714,58 @@ def render_route_map(route_orders, selected_station, selected_line):
     )
     st.plotly_chart(fig, use_container_width=True)
 
+    train_positions = get_realtime_train_positions(seoul_key or "sample", selected_line) if seoul_key else []
+    if train_positions:
+        station_coord_map = {}
+        for segment in segments:
+            for station_key, coord in zip(segment["station_keys"], segment["coords"]):
+                station_coord_map.setdefault(station_key_from_display(station_key), coord)
+
+        fig_train = go.Figure()
+        stt_map = {"0": "진입중", "1": "상행(운행중)", "2": "하행(운행중)"}
+        train_x, train_y, train_hover, train_colors, train_symbols = [], [], [], [], []
+
+        for train in train_positions:
+            station_name = train.get("statnNm", "")
+            target_station = next((name for name in station_coord_map if station_name in name or name in station_name), None)
+            if not target_station:
+                continue
+            x_c, y_c = station_coord_map[target_station]
+            is_up = train.get("updnLine", "0") == "0"
+            offset = 0.45 if is_up else -0.45
+            train_x.append(x_c + offset)
+            train_y.append(y_c)
+            train_colors.append("#3b82f6" if is_up else "#f97316")
+            train_symbols.append("triangle-up" if is_up else "triangle-down")
+            train_hover.append(
+                f"차량번호: {train.get('trainNo', '미상')}<br>"
+                f"현재역: {target_station}<br>"
+                f"운행상태: {stt_map.get(train.get('trainSttus', '1'), '운행중')}<br>"
+                f"종착역: {train.get('statnTnm', '미상')}"
+            )
+
+        if train_x:
+            fig_train.add_trace(go.Scatter(
+                x=train_x,
+                y=train_y,
+                mode="markers",
+                marker=dict(symbol=train_symbols, size=13, color=train_colors, line=dict(color="#ffffff", width=1.5)),
+                hoverinfo="text",
+                hovertext=train_hover,
+                showlegend=False,
+            ))
+
+        fig_train.update_layout(
+            title=f"{selected_line} 실시간 위치",
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            height=360,
+            margin=dict(l=12, r=12, t=48, b=12),
+        )
+        st.plotly_chart(fig_train, use_container_width=True)
+
     ordered_station_keys = []
     seen_stations = set()
     for segment in segments:
@@ -676,6 +779,40 @@ def render_route_map(route_orders, selected_station, selected_line):
         st.markdown(f"**{selected_line} 역 순서**")
         st.caption(" · ".join(line_station_names))
 
+
+    if ordered_station_keys:
+        line_station_names = [station_key_from_display(station) for station in ordered_station_keys]
+        st.markdown(f"**{selected_line} 전체 역 이름**")
+        st.write(" · ".join(line_station_names))
+
+    st.markdown("---")
+    arrival_station_name = station_key_from_display(selected_station) if selected_station else selected_line
+    st.subheader(f"⏱️ {arrival_station_name}역 실시간 도착 정보")
+    with st.spinner("실시간 도착 정보를 조회하는 중..."):
+        arrival_data = get_realtime_station_arrival(arrival_station_name, seoul_key or "sample") if selected_station else []
+
+    if arrival_data:
+        arr_cols = st.columns(2)
+        up_trains = [a for a in arrival_data if a.get("updnLine") in ["상행", "내선"] or a.get("updnLine") == "0"]
+        down_trains = [a for a in arrival_data if a.get("updnLine") in ["하행", "외선"] or a.get("updnLine") == "1"]
+
+        with arr_cols[0]:
+            st.markdown(f"### 🔵 {direction_title(selected_line, 'up')}")
+            if up_trains:
+                for arr in up_trains[:2]:
+                    render_arrival_card(arr, "#3b82f6")
+            else:
+                st.info("현재 조회 가능한 상행 열차 정보가 없습니다.")
+
+        with arr_cols[1]:
+            st.markdown(f"### 🟠 {direction_title(selected_line, 'down')}")
+            if down_trains:
+                for arr in down_trains[:2]:
+                    render_arrival_card(arr, "#ef9f27")
+            else:
+                st.info("현재 조회 가능한 하행 열차 정보가 없습니다.")
+    else:
+        st.info("실시간 도착 정보가 없거나 조회에 실패했습니다.")
 
 @st.cache_data(show_spinner=False)
 def load_metric_sample(station_key, sample_size):
@@ -868,6 +1005,7 @@ if hol_msg:
     icon = "🎌" if hol_name else "📅"
     st.markdown(f'<div class="holiday-banner">{icon} {hol_msg}</div>', unsafe_allow_html=True)
 
+seoul_key = os.environ.get("SEOUL_SUBWAY_API_KEY", "sample")
 base_avg = get_station_avg(selected_station, LSTM_BASE_DF)
 ROUTE_ORDERS = load_route_station_orders()
 
@@ -891,8 +1029,9 @@ with tab0:
         index=LINE_OPTIONS.index(st.session_state["route_map_line"]),
         key="route_map_line",
     )
-    route_selected_station = selected_station if line_key_from_station(selected_station) == route_line else ""
-    render_route_map(ROUTE_ORDERS, route_selected_station, route_line)
+    route_line = line_key_from_station(selected_station) or route_line
+    route_selected_station = selected_station
+    render_route_map(ROUTE_ORDERS, route_selected_station, route_line, seoul_key)
 
 with tab1:
     col_info, col_metric = st.columns([3, 2])
