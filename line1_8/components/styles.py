@@ -28,5 +28,28 @@ def inject_custom_styles():
             padding: 10px 14px; margin-bottom: 6px;
             display: flex; justify-content: space-between; align-items: center;
         }
+        /* 사이드바 여백 축소 및 헤더 제거로 로고를 최상단에 밀착 */
+        [data-testid="stSidebarHeader"] {
+            display: none !important;
+            padding: 0 !important;
+            margin: 0 !important;
+        }
+        [data-testid="stSidebarUserContent"] {
+            padding-top: 0rem !important;
+            margin-top: 0rem !important;
+        }
+        [data-testid="stSidebar"] > div:first-child {
+            padding-top: 0.5rem !important;
+        }
+        [data-testid="stSidebarUserContent"] .stBlock {
+            gap: 0.5rem !important;
+        }
+        /* 로고 이미지 가운데 정렬 */
+        [data-testid="stSidebarUserContent"] img {
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
+        }
     </style>
     """, unsafe_allow_html=True)
+

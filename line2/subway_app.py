@@ -61,6 +61,11 @@ if not model_loaded_state:
 
 # ── 6. 사이드바 설정 영역 ────────────────────────────────────────────────────────
 with st.sidebar:
+    logo_path = BASE_DIR / "logo_line2.png"
+    if logo_path.exists():
+        st.image(str(logo_path), width=200)
+        st.divider()
+
     st.header("⚙️ 예측 설정")
 
     loaded_models = [m_name for m_name, info in ALL_MODELS.items() if info.get("loaded", False)]
