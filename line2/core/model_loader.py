@@ -2,20 +2,14 @@ import os
 import pandas as pd
 import numpy as np
 import joblib
-import keras
 import streamlit as st
 from pathlib import Path
 from core.config import ALL_LINE2_STATIONS
+from core.numpy_lstm import NumpyLSTMModel
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
 # ── Keras 3 호환용 패치 클래스 선언 ──────────────────────────────────────────
-@keras.saving.register_keras_serializable(package="Custom")
-class PatchedEmbedding(keras.layers.Embedding):
-    def __init__(self, *args, **kwargs):
-        kwargs.pop('quantization_config', None)
-        super().__init__(*args, **kwargs)
-
 # ── LSTM 예측 모델 학습/추론용 과거 시계열 기준 데이터셋 로드 ──────────────────────────
 @st.cache_data
 def load_lstm_base_dataset():
@@ -94,28 +88,12 @@ def load_all_models():
 
     # 4. LSTM
     try:
-        m_board = keras.models.load_model(
-            BASE_DIR / "models" / "lstm" / "lstm_boarding_line2.keras",
-            custom_objects={'Embedding': PatchedEmbedding}, 
-            compile=False
-        )
-        m_alight = keras.models.load_model(
-            BASE_DIR / "models" / "lstm" / "lstm_alighting_line2.keras",
-            custom_objects={'Embedding': PatchedEmbedding}, 
-            compile=False
-        )
-        
+        m_board = NumpyLSTMModel(BASE_DIR / "models" / "lstm" / "lstm_boarding_line2.keras")
+        m_alight = NumpyLSTMModel(BASE_DIR / "models" / "lstm" / "lstm_alighting_line2.keras")
+
         try:
-            m_board_jamsil = keras.models.load_model(
-                BASE_DIR / "models" / "lstm" / "lstm_boarding_잠실_line2.keras",
-                custom_objects={'Embedding': PatchedEmbedding}, 
-                compile=False
-            )
-            m_alight_jamsil = keras.models.load_model(
-                BASE_DIR / "models" / "lstm" / "lstm_alighting_잠실_line2.keras",
-                custom_objects={'Embedding': PatchedEmbedding}, 
-                compile=False
-            )
+            m_board_jamsil = NumpyLSTMModel(BASE_DIR / "models" / "lstm" / "lstm_boarding_?????????_line2.keras")
+            m_alight_jamsil = NumpyLSTMModel(BASE_DIR / "models" / "lstm" / "lstm_alighting_?????????_line2.keras")
         except Exception:
             m_board_jamsil = m_board
             m_alight_jamsil = m_alight
@@ -123,7 +101,7 @@ def load_all_models():
         scaler_path = BASE_DIR / "models" / "lstm" / "scaler_line2.pkl"
         if not os.path.exists(scaler_path):
             scaler_path = BASE_DIR / "models" / "lstm" / "scaler_x_line2.pkl"
-            
+
         scaler = joblib.load(scaler_path)
         le_lstm = joblib.load(BASE_DIR / "models" / "lstm" / "label_encoder_line2.pkl")
 
@@ -137,6 +115,7 @@ def load_all_models():
             "loaded": True
         }
     except Exception as e:
-        models["LSTM"] = {"loaded": False}
+        print(f"[???] LSTM ??? ??? ???: {e}")
+        models["LSTM"] = {"loaded": False, "error": str(e)}
 
     return models, le_station, le_station is not None
