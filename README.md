@@ -152,5 +152,7 @@ streamlit run subway_app.py --server.port 8502
 
 ## Hugging Face Spaces 배포 가이드
 각 폴더(`line2/`, `line1_8/`)의 내부 파일들이 개별 허깅페이스 저장소(Docker Space)의 최상위 루트(Root)에 가도록 푸시하여 배포를 완료합니다. 각 디렉토리 내부에는 Docker 빌드를 위한 `Dockerfile`과 Space 파싱용 `README.md` 메타데이터 헤더가 이미 완비되어 있습니다.
+- 지하철 1~8호선 혼잡도 : https://huggingface.co/spaces/lololoooool/subway_line1_8
+- 지하철 2호선 혼잡도 : https://huggingface.co/spaces/lololoooool/subway_line2
 
 
